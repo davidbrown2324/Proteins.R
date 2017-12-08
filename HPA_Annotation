@@ -1,0 +1,91 @@
+##HPA_Annotation
+##15Nov2017
+#David Brown
+
+##Run after Disordered_Protein_Bioinformatics_v8
+
+##Set up 1 - Load HPA data, it uses stupid gene names
+HPA <- read.csv("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/Human_Protein_Atlas_Subcellular_Localisation_Download.csv")
+
+##Process HPA data into a more valuable format
+
+#Generate a list of all localisation classes
+levels(HPA$GO.id)
+
+##Collapse redundant array into a single string separated by ;
+t<-paste(c(levels(HPA$GO.id)), collapse=';' )
+
+##Redivide by ;
+tt<-strsplit(t, ";")
+
+##Convert back to string
+ttt<-unlist(tt)
+
+##Eliminate Redundancy
+levels(as.factor(ttt))
+
+##What is the frequency of each GO.id in the HPA data before subsetting?
+HPA_location_table <- table(ttt)
+
+##Tidy names
+raw_loc_names<-names(table(ttt))
+temp_loc_list<-unlist(strsplit(raw_loc_names, split = " \\("))
+neat_loc_names<-temp_loc_list[!grepl("\\)", temp_loc_list)]
+names(HPA_location_table)<-neat_loc_names
+
+#Generate logicle block 'op' for subcellular localisation GO terms
+op<-as.data.frame(lapply(X = neat_loc_names, function(x) grepl(x, HPA$GO.id)))
+names(op)<-neat_loc_names
+#Could tidy " " to "_"
+op$ensembl_gene_id<-HPA$Gene
+
+##Sanity check
+HPA$GO.id[1]
+op[1,]
+
+##Really ought to convert this matrix 'op' to a confidence score from 'uncertain=0',  'approved=1',  'supported=2' 'validated=3'.
+scop<-data.frame("Gene"=HPA$Gene, "U"=HPA$Uncertain, "A"=HPA$Approved, "S"=HPA$Supported, "V"=HPA$Validated)
+#Not easy
+
+##max.col()may help
+
+##Set up 2
+##Load the BiomaRt package
+library(biomaRt)
+
+#Define mart and data set
+mart <- useDataset(dataset = "hsapiens_gene_ensembl", 
+                   mart    = useMart("ENSEMBL_MART_ENSEMBL",
+                                     host    = "www.ensembl.org"))
+
+#Fetch gene ids
+p2g<- getBM(attributes = c("ensembl_gene_id", "ensembl_peptide_id"),
+               filters = "ensembl_peptide_id", values = an$ensembl_peptide_id,
+             mart = mart)
+
+#Label proteome data 'an' with gene_ids -> 'gan'
+gan<-merge(an, p2g, by = "ensembl_peptide_id",   all.x = TRUE)
+
+##Annotate proteome data 'gan' with HPA subcellular localisation -> "sub"
+sub<-merge(gan, op, by="ensembl_gene_id", all.x = TRUE)
+
+#write.table(sub, "Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/human_proteome_subcellular_localisation.txt", sep="\t", row.names=FALSE)
+#sub<-read.table("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/human_proteome_subcellular_localisation.txt", sep="\t", header=TRUE)
+
+
+par(mar=c(15,4,2,1))
+barplot(sort(HPA_location_table, decreasing = TRUE), las=2, col = 'magenta', ylab="Frequency", main= "Available HPA Subcellular Localisation Data")
+
+##How many Foci in our data set?
+sub$Nuclear_foci<-sub$`Nuclear bodies` | sub$`Nuclear speckles` | sub$`Nucleoli fibrillar center`
+summary(sub$Nuclear_foci) #4,435
+
+foci<-sub[which(sub$Nuclear_foci | sub$`Cytoplasmic bodies`),]
+#write.table(foci, "Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/foci.txt", sep="\t", row.names=FALSE)
+#foci<-read.table("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/foci.txt", sep="\t", header=TRUE)
+
+summary(foci$Uniquely_mapped) #3,601
+ufo<-foci[foci$Uniquely_mapped,]
+
+duf<-na.omit(ufo[ufo$disordered,])     #712
+##Remember some of these annotations could be sketchy
