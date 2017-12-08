@@ -1,0 +1,155 @@
+##Disordered_Protein_Bioinformatics_v10
+#7th of December 2017
+#David Brown
+
+#v4 removed disorder prediction <2 aa.
+#v5 corrected IDR_width calculation - 9th November 2017
+#   tidied tdw naming.
+#v6 get the names consistent, and save annotated proteome data 'an'
+#v7 annotate multimapped D2P2 ids.
+#v8 calculate total width disorder 'twd' by peptide id not by D2P2
+#v9 remove circular function to genereate 'l'
+#v10 add an IDR count for each protein
+
+#Step 1 - Load proteome list
+#raw proteome list, 90,719 proteins containing "D2P2" ids (column 1) and "ensembl_peptide_id" (column 2)
+#raw <- read.table("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/proteinid2enspid.txt", sep="\t", header=TRUE)
+
+#[Optional] Check for duplicate values
+#length(unique(raw[,2]))==length(raw[,2]) #TRUE indicates no duplicates.
+
+#[Optional] Query uniprot to obtain protein lengths
+      # library("UniProt.ws")
+      # up <- UniProt.ws(taxId=9606) #Human Proteome (Probably could just start here, this is 160,566 protein ids)
+      # ##We don't have the D2P2 intersection with the whole proteome though?
+      # 
+      # ##Look up lengths of ensemble_peptide_ids
+      # len<-select(up, keys=raw[,2], columns="LENGTH", keytype="ENSEMBL_PROTEIN") #get protein length
+      # 
+      # ##Make names compatible
+      # colnames(len)<-c("ensembl_peptide_id", "length")
+
+#Save file
+#write.table(len, "Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/ensembl_peptide_id_and_length_aa.txt", sep="\t", row.names = FALSE)
+len<-read.table("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/ensembl_peptide_id_and_length_aa.txt", sep="\t", header=TRUE)
+
+##Remove obsolete ensemble IDs, which have been removed from uniprot due to redundancy
+#This is your starting proteome data!! 72,427 proteins
+#Annotate proteome with D2P2 id, lost during length lookup
+l<-merge(len[!is.na(len[,2]),], raw, by="ensembl_peptide_id", all.x=TRUE)         #circular function fixed!!
+
+##Segregate multi_mapping D2P2 ids
+#Collapse dat to unique values
+dat <- unique(data.frame("ensembl_peptide_id"=l$ensembl_peptide_id, "D2P2"=as.factor(l$D2P2)))
+
+##Count occurances
+t<-table(dat$D2P2)
+multi_list<-names(t[t>1]) #388 unique D2P2 ids that map to multiple peptide ids.
+length(unique(multi_list))
+
+##Label uniquely mapped proteins
+l$Uniquely_mapped<-!l$D2P2 %in% multi_list
+
+##Should probably save "l"
+#write.table(l, "Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/unique_ensembl_peptide_id_length_D2P2.txt", sep="\t", row.names=FALSE)
+
+#Step 2 - Load D2P2 predicted disordered domains, 391200 
+pred <- read.csv("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/human protein with 075 cutoff.csv", header=TRUE)
+names(pred)[1]<-"D2P2"  #rename the D2P2 id
+
+    #a) remove redundant disorder predictions in 'pred'
+    upred<-unique(pred)                     #330,955
+    
+    #b) calculate disorder width
+    upred$width<-(upred$end-upred$start)+1
+    
+    #c)   remove disorder regions <2 aa  *Suggestion of Das et al. 2014
+    upred<-upred[upred$width>=2,]           #266,689                    #circular function!!
+  
+#Step 3 - Map disordered regions, predicted with 0.75 agreement onto the proteome
+
+    #a) assign predicted IDRs to ensemble_peptide_ids
+    m<-merge(upred, l, by="D2P2", all.x=TRUE)  #This introduces considerable redundancy as some D2P2 ids map to multiple ensemble_peptide_ids or obsolete peptide ids =NA
+    m<-merge(upred, l, all.x=TRUE)
+    
+    #b) 'm' is the list of D2P2 predicted IDRs per protein. 301,295
+    write.table(m, "Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/D2P2_IDR_predictions_and_ensembl_peptide_id.txt", sep="\t", row.names = FALSE)
+    m<-read.table("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/D2P2_IDR_predictions_and_ensembl_peptide_id.txt", sep="\t", header = TRUE)
+    
+    #c) calculate total disorder width 'tdw' per id
+    tdw<-aggregate(m, by = list(m$ensembl_peptide_id), function(x) sum(as.numeric(x)))
+    tdw_map<-tdw[,c(1,6)]
+    names(tdw_map)<-c("ensembl_peptide_id", "total_disorder_width")
+    
+        #Calculate number of predicted IDRs per protein?
+        IDR_count<-table(m$ensembl_peptide_id)
+        hist(IDR_count, 100, xlim=c(0,60))
+        summary(IDR_count==1)
+        
+        #This does not include proteins with no IDRs?
+        summary(is.na(m$width))
+        #m[m$ensembl_peptide_id %in% names(IDR_count[IDR_count==1]),]$width
+        
+        #This subset have a single predicted IDR
+        #IDR_count<-data.frame(table(m$ensembl_peptide_id))
+        #names(IDR_count)<-c("ensemble_peptide_id", "IDR_count")
+        tdw_map$IDR_count<-as.integer(table(m$ensembl_peptide_id))
+        #head(tdw_map)
+        #m[which(m$ensembl_peptide_id=="ENSP00000000442"),]
+    
+    #d) annotate proteome with tdw
+    an<-merge(l, tdw_map, by="ensembl_peptide_id",  all.x=TRUE)
+    an$disorder<-an$total_disorder_width/an$length
+    #summary(an$disorder>1)
+    
+    # 'an' does include proteins with no predicted IDR, but which may not have been tested by D2P2
+    
+    #287 proteins with isoforms are miscalculated.
+    #temp<-an[an$disorder>1,]$ensembl_peptide_id
+    #temp<-temp[!is.na(temp)]
+    #xx<-m[which(m$ensembl_peptide_id %in% temp),]
+    
+    #f) how many proteins are >50% disordered?
+    an$disordered<-an$disorder>0.5
+
+    summary(an$disordered) #12,791 proteins predicted >50% disorder
+    
+##Save 'an'
+write.table(an, "Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/D2P2_predictions_for_nonredundant_ensembl_peptide_ids.txt", sep="\t", row.names = FALSE)
+#an<-read.table("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/D2P2_predictions_for_nonredundant_ensembl_peptide_ids.txt", sep="\t", header = TRUE)
+    
+    # 'u' is the list of non-redundant proteins with unambiguous D2P2 IDR predictions  55,764
+    u<-an[an$Uniquely_mapped,]
+    
+    summary(u$disordered) #6,506
+    
+    # How many overhangs in u?
+    length(u$end > u$length)
+    plot(u$total_disorder_width/u$length, u$disorder) # sanity check
+    summary(u$disorder>1)
+    
+##Save 'u'
+write.table(u, "Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/unambiguous_D2P2_IDR_predictions_and_ensembl_peptide_id.txt", sep="\t", row.names = FALSE)
+    
+
+     #g) how many are to short?
+    summary(u$length>150) #52,892
+    
+    summary(u[u$disordered,]$length>150) #4,707 proteins > 150 aa with predicted >50% disorder
+    
+     #h) what if you also exclude totally disordered proteins
+    summary(u[u$disorder<0.9,]$disordered) #6,306 proteins predicted 90% > disorder >50%
+    
+    summary(u[u$disorder<0.9&u$length>150,]$disordered) #4,259 "Goldelocks" proteins in the sweet spot. 
+    
+     #i) lets extract this list of 3,356 proteins
+    dis<-u[which(u$disordered & u$disorder<0.9 & u$length>150),]
+   
+    ##Control list of 13,285 proteins without D2P2 annotation
+    ordered<-u[is.na(u$total_disorder_width),]
+    
+#Save file
+write.table(dis, "Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/ensembl_peptide_id_length_disorder_width_and_score.txt", sep="\t", row.names = FALSE)
+#dis<-read.table("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/ensembl_peptide_id_length_disorder_width_and_score.txt", sep="\t", header=TRUE)
+
+write.table(ordered, "Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/ensembl_peptide_id_ordered_control_set.txt", sep="\t", row.names = FALSE)
