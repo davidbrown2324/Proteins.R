@@ -1,0 +1,262 @@
+##IDR_set_annotation_v8
+##15Nov2017
+#David Brown
+
+##Run after Sequence_annotation
+
+#v2 includes cytoplasmic and nuclear IDR control sets.
+#v3 Polar Tract annotation
+#v4 Functions to classify IDRs
+#v5 reverts to slow computation that works
+#v6 Combine data sets for different subcelluar localisations into a single data frame, labelled.
+        #NB, some proteins belong to more than one location, so the combined set should be filtered for unique proteins when necessary!
+
+#v7 annotate IDRs with amino acid enrichment (joint_IDR_dat3), and sequence complexity
+#v8 cleans joint_IDR_dat3 better
+
+##Load IDR_Set 'm'
+m<-read.table("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/D2P2_IDR_predictions_and_ensembl_peptide_id.txt", sep="\t", header = TRUE)
+
+##Load sequence info for foci 'foc_seq2'
+foci_pep<-read.table("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/foci_pep.txt", sep="\t", header = TRUE)
+
+##Load sequence info for cytoplasmic and nuclear controls
+cyt_pep<-read.table("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/cyt_pep.txt", sep="\t", header = TRUE)
+nuc_pep<-read.table("Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/nuc_pep.txt", sep="\t", header = TRUE)
+
+##Need sequence data for 'm', but I only have it for a subset 'foci'
+##Annotate the foc_seq2 data set with IDR info (multiple IDRs per peptide)
+#foc_IDRs<-merge(foc_seq2, m, by="ensembl_peptide_id") #20,138 as any protein may have many IDRs
+#Drop repeated columns
+foc_IDRs<-merge(m, foci_pep)
+cyt_IDRs<-merge(m, cyt_pep)
+nuc_IDRs<-merge(m, nuc_pep)
+
+write.table(foc_IDRs, "Y:/DavidB/Data/Systematic_Search_for_Phase_Separating_Proteins/p2p_conversion/foc_IDRs.txt", sep="\t", row.names = FALSE)
+
+##Combine data, but label each subcellular group!
+foc_IDRs$Localisation="Foci"
+cyt_IDRs$Localisation="Cytoplasm"
+nuc_IDRs$Localisation="Nucleus"
+
+joint_IDR_set<-rbind(foc_IDRs,cyt_IDRs,nuc_IDRs)
+
+#a) Get IDR sequences by subsetting protein sequence
+joint_IDR_set$IDR_seq<-substr(joint_IDR_set$uniprot_sequence, joint_IDR_set$start, joint_IDR_set$end)
+
+#b) Determine IDR position. I am counting IDRs within 3 aa of the termini as terminal!
+joint_IDR_set$IDR_position<-"Unknown"
+joint_IDR_set[joint_IDR_set$start<3,]$IDR_position<-"N-terminal"
+joint_IDR_set[joint_IDR_set$end>(joint_IDR_set$length-3),]$IDR_position<-"C-terminal"
+joint_IDR_set[joint_IDR_set$IDR_position=="Unknown",]$IDR_position<-"Internal"
+
+#table(joint_IDR_set$IDR_position)
+
+#c) Calculate IDR seq properties
+library(Peptides)
+joint_IDR_properties<-aaComp(joint_IDR_set$IDR_seq)
+#reorganise for compatibility with data frame
+joint_IDR_prop<-t(sapply(joint_IDR_properties, function(x) x[,"Mole%"]))/100
+
+##Bind properties to localisation data
+joint_IDR_dat<-cbind(joint_IDR_set, joint_IDR_prop)
+
+#Define NCPR
+ncpr_fun<-function(x){x$Basic-x$Acidic}  #may need to be absolute!
+
+##Calculate NCPR
+joint_IDR_dat$NCPR<-ncpr_fun(joint_IDR_dat)  
+
+##Classify sequences (Use a modified pt_fun form Polar_Tract_Identification.R)
+library(Biostrings)
+
+s<-head(joint_IDR_dat$IDR_seq,10)
+
+##Define Polar Tract Function for AAStringSet 's'
+pt_fun<-function(s){
+  IDR_aa<-AAStringSet(as.character(s))
+  IDR_composition<-alphabetFrequency(IDR_aa)  #IDR_composition is a matrix and must be accessed via 'colnames' not 'names'
+  
+  PT_frac<-rowSums(IDR_composition[,c("Q","N","S","G","P")]/width(IDR_aa))                 #Neutral Polar AAs
+  HP_frac<-rowSums(IDR_composition[,c("F","H","W","Y", "A", "I", "L", "V")]/width(IDR_aa)) #Aromatic and Aliphatic AAs
+  
+  #Polar Tract
+  PT_frac>0.5 & HP_frac<=0.5
+}
+
+#Identify Polar Tracts
+joint_IDR_dat$PT<-pt_fun(joint_IDR_dat$IDR_seq)
+
+#Define Strong Polyampholytes (PAs) and Strong Polyelectrolytes (PE)
+PA_fun<-function(x){x$Charged>0.35 & x$NCPR<0.30}
+PE_fun<-function(x){x$Charged>0.35 & x$NCPR>0.30}
+
+#Classify PAs and PEs
+joint_IDR_dat$PA<-PA_fun(joint_IDR_dat)  
+joint_IDR_dat$PE<-PE_fun(joint_IDR_dat) 
+
+#PT, PA, and PE are mutually exclusive therefore classify each IDR as one of these or "other"
+IDR_class_fun<-function(x){
+  clas<-rep("Other", dim(x)[1])
+  clas[which(x$PT==TRUE)]<-"PT"
+  clas[which(x$PA==TRUE)]<-"PA"
+  clas[which(x$PE==TRUE)]<-"PE"
+  return(clas)
+}
+
+joint_IDR_dat$class<-IDR_class_fun(joint_IDR_dat)
+
+#Define IDR_aa_fraction function 'Iaaf' for AAStringSet 's'
+Iaaf_fun<-function(s){
+  IDR_composition<-alphabetFrequency(s)
+  IDR_fraction<-IDR_composition/width(IDR_aa)
+  return(IDR_fraction)
+}
+
+#Convert IDR_seq to AAStringSet
+IDR_aa<-AAStringSet(as.character(joint_IDR_dat$IDR_seq))
+
+IDR_fraction<-Iaaf_fun(IDR_aa)
+dim(IDR_fraction)
+
+joint_IDR_dat3<-cbind(joint_IDR_dat2, IDR_fraction)
+
+##########################################################
+
+#Question: What Properties if any are enriched in punctate proteins over controls!
+
+#Step 1 - Clean data of ambigious mappings, and very short IDRs
+cln_fun<-function(x){x[which(x$Uniquely_mapped & nchar(x$IDR_seq)>10),]}
+
+#Clean that data
+cj_IDR_dat<-cln_fun(joint_IDR_dat)
+
+#Step 2 - Count each type at each sublocation
+#Count overall as an example
+summary(as.factor(joint_IDR_dat3$class))   #Before cleaning  
+summary(as.factor(cj_IDR_dat$class))      ##But remember this clean data set may include redundancy from pooling sublocalisation
+
+#Subset based on Localization 
+summary(as.factor(cj_IDR_dat[cj_IDR_dat$Localisation=="Foci",]$class)) #Foci
+summary(as.factor(cj_IDR_dat[cj_IDR_dat$Localisation=="Cytoplasm",]$class)) #Cytoplasm
+summary(as.factor(cj_IDR_dat[cj_IDR_dat$Localisation=="Nucleus",]$class)) #Cytoplasm
+
+#Compare IDR width distributions
+plot(density(cj_IDR_dat$width), xlim=c(0,300), main="Predicted IDR Length Distribution", xlab="Length (Amino Acids)")
+lines(density(cj_IDR_dat[cj_IDR_dat$Localisation=="Foci",]$width), col="Red")
+lines(density(cj_IDR_dat[cj_IDR_dat$Localisation=="Cytoplasm",]$width), col="Blue")
+lines(density(cj_IDR_dat[cj_IDR_dat$Localisation=="Nucleus",]$width), col="Green")
+#No difference with localisation
+
+#Compare IDR width distributions by class
+plot(density(cj_IDR_dat$width), xlim=c(0,300), ylim=c(0,0.07), main="Predicted IDR Length Distribution", xlab="Length (Amino Acids)")
+lines(density(cj_IDR_dat[cj_IDR_dat$class=="PT",]$width), col="Red")
+lines(density(cj_IDR_dat[cj_IDR_dat$class=="PA",]$width), col="Blue")
+lines(density(cj_IDR_dat[cj_IDR_dat$class=="PE",]$width), col="Green")  #Fewer IDRs
+lines(density(cj_IDR_dat[cj_IDR_dat$class=="Other",]$width), col="Grey")
+#No real difference with IDR class
+
+##Compare the frequency of IDR classes at different subcellular localisations
+mt<-cbind(summary(as.factor(foc_IDR_cln$class)),summary(as.factor(cyt_IDR_cln$class)),summary(as.factor(nuc_IDR_cln$class)))
+colnames(mt)<-c("Foci", "Cytoplasmic", "Nuclear")
+mt
+
+#Absolute numbers
+barplot(mt, 
+        beside=T, 
+        legend.text = rownames(mt),
+        main="IDR classes at different subcellular locations")
+
+mt2<-rbind(mt,colSums(mt))
+mt2
+rownames(mt2)[5]<-"Total"
+
+barplot(mt2, beside=T)
+
+#Percentage of IDRs
+mt3<-sweep(mt, 2, colSums(mt), `/`)
+barplot(mt3, 
+        beside=T,
+        legend.text = rownames(mt3),
+        main="IDR classes at different subcellular locations",
+        ylab="Fraction of IDRs",
+        xlab="Subcellular Localization",
+        ylim=c(0,1))
+
+#Is there a significant enrichment in any of these classes?
+#Chi-squared Test of Independence.
+
+#Two random variables x and y are called independent if 
+#the probability distribution of one variable is not affected by the presence of another.
+
+#To test the dependence of class on subcellular localisation, use chi-squared
+chisq.test(mt3) 
+
+#p-value = 1, 
+#As the p-value is greater than the .05 significance level, 
+#we do not reject the null hypothesis that IDR "class" is independent of subcellular localisation. 
+
+#What about within foci?
+#Get lists for each focal type
+nb_id<-sub_cln[sub_cln$`Nuclear bodies`,]$ensembl_peptide_id
+ns_id<-sub_cln[sub_cln$`Nuclear speckles`,]$ensembl_peptide_id
+cb_id<-sub_cln[sub_cln$`Cytoplasmic bodies`,]$ensembl_peptide_id  
+
+##Summarise by protein list
+nt<-cbind(summary(as.factor(cj_IDR_dat[cj_IDR_dat$ensembl_peptide_id %in% nb_id,]$class)),
+          summary(as.factor(cj_IDR_dat[cj_IDR_dat$ensembl_peptide_id %in% ns_id,]$class)),
+          summary(as.factor(cj_IDR_dat[cj_IDR_dat$ensembl_peptide_id %in% cb_id,]$class)))
+colnames(nt)<-c("Nuclear Body", "Nuclear Speckle", "Cytoplasmic Body")
+
+#Percentage of IDRs
+nt3<-sweep(nt, 2, colSums(nt), `/`)
+
+barplot(nt, 
+        beside=T,
+        legend.text = rownames(nt),
+        main="IDR classes at different subcellular locations",
+        ylab="Fraction of IDRs",
+        xlab="Subcellular Localization")
+
+barplot(nt3, 
+        beside=T,
+        legend.text = rownames(nt3),
+        main="IDR classes at different subcellular locations",
+        ylab="Fraction of IDRs",
+        xlab="Subcellular Localization",
+        ylim=c(0,1))
+
+##Summarise by protein list
+ot<-cbind(summary(as.factor(cj_IDR_dat[cj_IDR_dat$ensembl_peptide_id %in% nb_id,]$class)),
+          summary(as.factor(cj_IDR_dat[cj_IDR_dat$ensembl_peptide_id %in% ns_id,]$class)),
+          summary(as.factor(cj_IDR_dat[cj_IDR_dat$ensembl_peptide_id %in% cb_id,]$class)))
+colnames(ot)<-c("Nuclear Body", "Nuclear Speckle", "Cytoplasmic Body")
+
+#Percentage of IDRs
+ot3<-sweep(ot, 2, colSums(ot), `/`)
+
+barplot(ot3, 
+        beside=T,
+        legend.text = rownames(ot3),
+        main="IDR classes at different subcellular locations",
+        ylab="Fraction of IDRs",
+        xlab="Subcellular Localization",
+        ylim=c(0,1))
+###Very little effect
+#I am surprised
+
+#Real enrichment analysis should be done on the protein level!
+#Step 4 - Collapse by protein
+names(cj_IDR_dat)
+
+#Count levels of each class per protein
+cj_IDR_dat$class<-as.factor(cj_IDR_dat$class)
+
+ot4<-table(cj_IDR_dat[unique(cj_IDR_dat$ensembl_peptide_id),]$class)
+
+barplot(ot4, 
+        beside=T,
+        legend.text = rownames(ot3),
+        main="IDR classes at different subcellular locations",
+        ylab="Fraction of IDRs",
+        xlab="Subcellular Localization")
